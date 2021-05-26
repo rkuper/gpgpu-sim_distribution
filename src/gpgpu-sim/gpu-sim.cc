@@ -249,8 +249,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          " {<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_"
                          "alloc>,<mshr>:<N>:<merge>,<mq> | none}",
                          "none");
-  option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
-                         &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
   option_parser_register(opp, "-gpgpu_l1_banks", OPT_UINT32,
                          &m_L1D_config.l1_banks, "The number of L1 cache banks",
                          "1");
@@ -328,14 +326,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_shmem_size", OPT_UINT32, &gpgpu_shmem_size,
       "Size of shared memory per shader core (default 16kB)", "16384");
-  option_parser_register(opp, "-gpgpu_shmem_option", OPT_CSTR,
-                         &gpgpu_shmem_option,
-                         "Option list of shared memory sizes", "0");
-  option_parser_register(
-      opp, "-gpgpu_unified_l1d_size", OPT_UINT32,
-      &m_L1D_config.m_unified_cache_size,
-      "Size of unified data cache(L1D + shared memory) in KB", "0");
-  option_parser_register(opp, "-gpgpu_adaptive_cache_config", OPT_BOOL,
+  option_parser_register(opp, "-gpgpu_adaptive_cache_config", OPT_UINT32,
                          &adaptive_cache_config, "adaptive_cache_config", "0");
   option_parser_register(
       opp, "-gpgpu_shmem_sizeDefault", OPT_UINT32, &gpgpu_shmem_sizeDefault,
@@ -701,6 +692,7 @@ void gpgpu_sim::launch(kernel_info_t *kinfo) {
   for (n = 0; n < m_running_kernels.size(); n++) {
     if ((NULL == m_running_kernels[n]) || m_running_kernels[n]->done()) {
       m_running_kernels[n] = kinfo;
+      printf("SUCHITA: Adding %s num %u to m_running_kernels \n", kinfo->name(), kinfo->get_uid());
       break;
     }
   }
@@ -740,6 +732,15 @@ bool gpgpu_sim::get_more_cta_left() const {
   }
   return false;
 }
+
+void gpgpu_sim::print_running_kernels(){
+  printf("SUCHITA: Printing running kernels with size %d: \n", m_running_kernels.size());
+  for(int n=0; n < m_running_kernels.size(); n++ ) {
+    if (m_running_kernels[n] != NULL)
+      printf("SUCHITA: Kernel ID- %u \n", m_running_kernels[n]->get_uid());
+  }
+}
+
 
 void gpgpu_sim::decrement_kernel_latency() {
   for (unsigned n = 0; n < m_running_kernels.size(); n++) {
@@ -1000,6 +1001,7 @@ bool gpgpu_sim::active() {
 
 void gpgpu_sim::init() {
   // run a CUDA grid on the GPU microarchitecture simulator
+	printf("SUCHITA: Reinitializing GPU! \n");
   gpu_sim_cycle = 0;
   gpu_sim_insn = 0;
   last_gpu_sim_insn = 0;
@@ -1043,6 +1045,7 @@ void gpgpu_sim::init() {
                gpu_tot_sim_insn, gpu_sim_insn);
   }
 #endif
+	printf("SUCHITA: Done Reinitializing GPU! \n");
 }
 
 void gpgpu_sim::update_stats() {
@@ -1639,6 +1642,10 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   // allocated to bind functional simulation state of threads to hardware
   // resources (simulation)
   warp_set_t warps;
+  unsigned cta_id_x = 0;
+  unsigned cta_id_y = 0;
+  unsigned cta_id_z = 0;
+  unsigned kernel_id_num = 0;
   unsigned nthreads_in_block = 0;
   function_info *kernel_func_info = kernel.entry();
   symbol_table *symtab = kernel_func_info->get_symtab();
@@ -1694,6 +1701,10 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
                  "initialized @(%lld,%lld)\n",
                  free_cta_hw_id, start_thread, end_thread, m_gpu->gpu_sim_cycle,
                  m_gpu->gpu_tot_sim_cycle);
+  printf("GPGPU-Sim uArch: Started CTA (%d,%d,%d) #%d (%lld,%lld), %u CTAs"
+                  " running, kernel=%d\n", cta_id_x, cta_id_y, cta_id_z,
+                  ctaid, m_gpu->gpu_sim_cycle, m_gpu->gpu_tot_sim_cycle,
+                  m_n_active_cta, kernel_id_num);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////

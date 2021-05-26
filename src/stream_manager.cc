@@ -36,8 +36,27 @@ unsigned CUstream_st::sm_next_stream_uid = 0;
 
 CUstream_st::CUstream_st() {
   m_pending = false;
+  m_num_operations = 0; //SUCHITA
+  m_running_kernel=0;  //SUCHITA
   m_uid = sm_next_stream_uid++;
   pthread_mutex_init(&m_lock, NULL);
+}
+
+bool CUstream_st::not_empty_but_launched()  //SUCHITA
+{
+  bool empty=1;
+  pthread_mutex_lock(&m_lock);
+  std::list<stream_operation>::iterator i;
+  for( i=m_operations.begin(); i!=m_operations.end(); i++ ) {
+    if(!(*i).is_launched()){
+      empty=0;
+      // printf("SUCHITA: Found an unlaunched kernel \n ");
+      break;
+    }
+  }
+  // bool empty = m_operations.empty();
+  pthread_mutex_unlock(&m_lock);
+  return empty;
 }
 
 bool CUstream_st::empty() {
@@ -64,27 +83,68 @@ void CUstream_st::synchronize() {
   } while (!done);
 }
 
-void CUstream_st::push(const stream_operation &op) {
+void CUstream_st::push(stream_operation &op) {
   // called by host thread
+  m_num_operations++; //SUCHITA: to give operations a uid within the stream - tracks number of operations within the stream
+  op.set_uid(m_num_operations);  //SUCHITA give operations a uid within the stream
   pthread_mutex_lock(&m_lock);
+	printf("SUCHITA: Pushing op type %u to stream %u \n", op.get_type() , get_uid());
   m_operations.push_back(op);
   pthread_mutex_unlock(&m_lock);
 }
 
-void CUstream_st::record_next_done() {
+void CUstream_st::record_next_done(stream_operation op) {
   // called by gpu thread
   pthread_mutex_lock(&m_lock);
   assert(m_pending);
   m_operations.pop_front();
   m_pending = false;
+  std::list<stream_operation>::iterator i;
+  for( i=m_operations.begin(); i!=m_operations.end(); i++ ) {
+    if((*i).is_launched()) {
+      m_pending=true;
+    }
+  }
   pthread_mutex_unlock(&m_lock);
+}
+
+stream_operation CUstream_st::next_op() // SUCHITA
+{
+  // called by gpu thread
+  pthread_mutex_lock(&m_lock);
+  stream_operation result;
+  std::list<stream_operation>::iterator i;
+  for( i=m_operations.begin(); i!=m_operations.end(); i++ ) {
+    if(!(*i).is_launched()){
+      result = *i;
+      if(i!=m_operations.begin()){
+//      if((*i--).is_kernel()){    //SUCHITA: will have to handle if the first element is accessed
+//      m_running_kernel=1;
+//      }
+    	}
+    }
+  }
+  pthread_mutex_unlock(&m_lock);
+  return result;
 }
 
 stream_operation CUstream_st::next() {
   // called by gpu thread
   pthread_mutex_lock(&m_lock);
   m_pending = true;
-  stream_operation result = m_operations.front();
+  // stream_operation result = m_operations.front();
+  stream_operation result;
+  std::list<stream_operation>::iterator i;
+  for( i=m_operations.begin(); i!=m_operations.end(); i++ ) {
+	  if(!(*i).is_launched()) {
+    	result = *i;
+  	  i->set_launched();
+	    if((*i).is_kernel())
+      	m_running_kernel=1;
+    	break;
+  	}
+	}
+	printf("SUCHITA: Running op type %u on stream %u \n", result.get_type() , get_uid());
   pthread_mutex_unlock(&m_lock);
   return result;
 }
@@ -111,6 +171,18 @@ void CUstream_st::print(FILE *fp) {
   pthread_mutex_unlock(&m_lock);
 }
 
+stream_operation CUstream_st::get_operation(unsigned grid_id)   //SUCHITA: given kernel id - get operation.
+{
+  std::list<stream_operation>::iterator i;
+  for( i=m_operations.begin(); i!=m_operations.end(); i++ ) {
+    if((*i).is_kernel()){
+      if((*i).get_kernel()->get_uid() == grid_id){
+        return *i;
+      }
+    }
+  }
+}
+
 bool stream_operation::do_operation(gpgpu_sim *gpu) {
   if (is_noop()) return true;
 
@@ -121,29 +193,29 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
     case stream_memcpy_host_to_device:
       if (g_debug_execution >= 3) printf("memcpy host-to-device\n");
       gpu->memcpy_to_gpu(m_device_address_dst, m_host_address_src, m_cnt);
-      m_stream->record_next_done();
+      m_stream->record_next_done(*this);
       break;
     case stream_memcpy_device_to_host:
       if (g_debug_execution >= 3) printf("memcpy device-to-host\n");
       gpu->memcpy_from_gpu(m_host_address_dst, m_device_address_src, m_cnt);
-      m_stream->record_next_done();
+      m_stream->record_next_done(*this);
       break;
     case stream_memcpy_device_to_device:
       if (g_debug_execution >= 3) printf("memcpy device-to-device\n");
       gpu->memcpy_gpu_to_gpu(m_device_address_dst, m_device_address_src, m_cnt);
-      m_stream->record_next_done();
+      m_stream->record_next_done(*this);
       break;
     case stream_memcpy_to_symbol:
       if (g_debug_execution >= 3) printf("memcpy to symbol\n");
       gpu->gpgpu_ctx->func_sim->gpgpu_ptx_sim_memcpy_symbol(
           m_symbol, m_host_address_src, m_cnt, m_offset, 1, gpu);
-      m_stream->record_next_done();
+      m_stream->record_next_done(*this);
       break;
     case stream_memcpy_from_symbol:
       if (g_debug_execution >= 3) printf("memcpy from symbol\n");
       gpu->gpgpu_ctx->func_sim->gpgpu_ptx_sim_memcpy_symbol(
           m_symbol, m_host_address_dst, m_cnt, m_offset, 0, gpu);
-      m_stream->record_next_done();
+      m_stream->record_next_done(*this);
       break;
     case stream_kernel_launch:
       if (m_sim_mode) {  // Functional Sim
@@ -179,7 +251,7 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
       printf("event update\n");
       time_t wallclock = time((time_t *)NULL);
       m_event->update(gpu->gpu_tot_sim_cycle, wallclock);
-      m_stream->record_next_done();
+      m_stream->record_next_done(*this);
     } break;
     case stream_wait_event:
       // only allows next op to go if event is done
@@ -187,7 +259,7 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
       printf("stream wait event processing...\n");
       if (m_event->num_updates() >= m_cnt) {
         printf("stream wait event done\n");
-        m_stream->record_next_done();
+        m_stream->record_next_done(*this);
       } else {
         return false;
       }
@@ -227,6 +299,9 @@ void stream_operation::print(FILE *fp) const {
     case stream_no_op:
       fprintf(fp, "no-op");
       break;
+		case stream_wait_event:
+		  fprintf(fp,"stream wait event");
+			break;
   }
 }
 
@@ -239,6 +314,7 @@ stream_manager::stream_manager(gpgpu_sim *gpu, bool cuda_launch_blocking) {
 }
 
 bool stream_manager::operation(bool *sim) {
+	get_gpu()->print_running_kernels();   //SUCHITA: to see kernels waiting to be bound to shaders
   bool check = check_finished_kernel();
   pthread_mutex_lock(&m_lock);
   //    if(check)m_gpu->print_stats();
@@ -251,6 +327,7 @@ bool stream_manager::operation(bool *sim) {
       m_grid_id_to_stream.erase(grid_uid);
     }
     op.get_stream()->cancel_front();
+		op.cancel(); // SUCHITA
   }
   pthread_mutex_unlock(&m_lock);
   // pthread_mutex_lock(&m_lock);
@@ -269,7 +346,13 @@ bool stream_manager::register_finished_kernel(unsigned grid_uid) {
   if (grid_uid > 0) {
     CUstream_st *stream = m_grid_id_to_stream[grid_uid];
     kernel_info_t *kernel = stream->front().get_kernel();
+    stream_operation op=stream->get_operation(grid_uid);
     assert(grid_uid == kernel->get_uid());
+		if (stream == NULL)
+			printf("SUCHITA: No stream for grid %u \n", grid_uid);
+		printf("SUCHITA: Front of stream %u has operation %u \n", stream->get_uid(), stream->front().get_type());
+		if (kernel == NULL)
+			printf("SUCHITA: No more kernels left on stream %u \n", stream->get_uid());
 
     // Jin: should check children kernels for CDP
     if (kernel->is_finished()) {
@@ -286,7 +369,8 @@ bool stream_manager::register_finished_kernel(unsigned grid_uid) {
       //            printf("kernel %d finishes, retires from stream %d\n",
       //            grid_uid, stream->get_uid()); kernel_stat.flush();
       //            kernel_stat.close();
-      stream->record_next_done();
+			printf("SUCHITA: kernel start cycle: %lld, end cycle: %lld \n ", kernel->start_cycle, kernel->end_cycle);
+      stream->record_next_done(op); // SUCHITA
       m_grid_id_to_stream.erase(grid_uid);
       kernel->notify_parent_finished();
       delete kernel;
@@ -321,7 +405,7 @@ stream_operation stream_manager::front() {
   //    if( concurrent_streams_empty() )
   m_service_stream_zero = true;
   if (m_service_stream_zero) {
-    if (!m_stream_zero.empty() && !m_stream_zero.busy()) {
+    if (!m_stream_zero.empty() && !m_stream_zero.busy() && !m_stream_zero.not_empty_but_launched()) {
       result = m_stream_zero.next();
       if (result.is_kernel()) {
         unsigned grid_id = result.get_kernel()->get_uid();

@@ -3,7 +3,8 @@
 ps -p $$ | awk '/bash/ || / sh/ || /zsh/ {exit 1;}' && echo "WARNING ** source setup_environment must be run in a bash, zsh or sh shell; see README"
 
 export GPGPUSIM_SETUP_ENVIRONMENT_WAS_RUN=
-export GPGPUSIM_ROOT="$( cd "$( dirname "$BASH_SOURCE" )" && pwd )"
+#export GPGPUSIM_ROOT="$( cd "$( dirname "$BASH_SOURCE" )" && pwd )"
+export GPGPUSIM_ROOT="/u/r/e/reese/private/research/accel-sim-framework/gpu-simulator/gpgpu-sim/"
 
 GPGPUSIM_VERSION_STRING=`cat $GPGPUSIM_ROOT/version | awk '/Version/ {print $8}'`
 #Detect Git branch and commit #
@@ -29,7 +30,8 @@ if [ ! `uname` = "Linux" -a  ! `uname` = "Darwin" ]; then
 	return;
 fi
 
-export PATH=`echo $PATH | sed "s#$GPGPUSIM_ROOT/bin:$CUDA_INSTALL_PATH/bin:##"`
+#export PATH=`echo $PATH | sed "s#$GPGPUSIM_ROOT/bin:$CUDA_INSTALL_PATH/bin:##"`
+export PATH='/u/r/e/reese/private/research/accel-sim-framework/gpu-simulator/gpgpu-sim/bin:/p/hal/private/installs/cuda-11.1/bin:/bin:/usr/bin'
 export PATH=$GPGPUSIM_ROOT/bin:$CUDA_INSTALL_PATH/bin:$PATH
 
 # to run the debug build of GPGPU-Sim run:
@@ -84,7 +86,7 @@ if [ -f /usr/lib64/libOpenCL.so ]; then
 	fi
 fi
 
-# setting LD_LIBRARY_PATH as follows enables GPGPU-Sim to be invoked by 
+# setting LD_LIBRARY_PATH as follows enables GPGPU-Sim to be invoked by
 # native CUDA and OpenCL applications. GPGPU-Sim is dynamically linked
 # against instead of the CUDA toolkit.  This replaces this cumbersome
 # static link setup in prior GPGPU-Sim releases.
@@ -98,9 +100,9 @@ fi
 
 
 # The following sets OPENCL_REMOTE_GPU_HOST which is used by GPGPU-Sim to
-# SSH to remote node to generate PTX for OpenCL kernels when running on 
+# SSH to remote node to generate PTX for OpenCL kernels when running on
 # a node that does not have an NVIDIA driver installed.
-# The remote node should have GPGPU-Sim installed at the same path 
+# The remote node should have GPGPU-Sim installed at the same path
 if [ `uname` = "Darwin" ]; then
 	HOSTNAME_PREFIX=`hostname -s`;
 	export HOSTNAME_DOMAIN=`hostname | sed s/$HOSTNAME_PREFIX\.//`;

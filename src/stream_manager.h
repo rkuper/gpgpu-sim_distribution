@@ -100,6 +100,7 @@ class stream_operation {
     m_type = stream_no_op;
     m_stream = NULL;
     m_done = true;
+    m_running=0;   //SUCHITA
   }
   stream_operation(const void *src, const char *symbol, size_t count,
                    size_t offset, struct CUstream_st *stream) {
@@ -111,6 +112,7 @@ class stream_operation {
     m_cnt = count;
     m_offset = offset;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(const char *symbol, void *dst, size_t count, size_t offset,
                    struct CUstream_st *stream) {
@@ -122,6 +124,7 @@ class stream_operation {
     m_cnt = count;
     m_offset = offset;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(kernel_info_t *kernel, bool sim_mode,
                    struct CUstream_st *stream) {
@@ -130,6 +133,7 @@ class stream_operation {
     m_sim_mode = sim_mode;
     m_stream = stream;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(struct CUevent_st *e, struct CUstream_st *stream) {
     m_kernel = NULL;
@@ -137,6 +141,7 @@ class stream_operation {
     m_event = e;
     m_stream = stream;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(struct CUstream_st *stream, class CUevent_st *e,
                    unsigned int flags) {
@@ -146,6 +151,7 @@ class stream_operation {
     m_cnt = m_event->num_issued();
     m_stream = stream;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(const void *host_address_src, size_t device_address_dst,
                    size_t cnt, struct CUstream_st *stream) {
@@ -159,6 +165,7 @@ class stream_operation {
     m_stream = stream;
     m_sim_mode = false;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(size_t device_address_src, void *host_address_dst,
                    size_t cnt, struct CUstream_st *stream) {
@@ -172,6 +179,7 @@ class stream_operation {
     m_stream = stream;
     m_sim_mode = false;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
   stream_operation(size_t device_address_src, size_t device_address_dst,
                    size_t cnt, struct CUstream_st *stream) {
@@ -185,6 +193,7 @@ class stream_operation {
     m_stream = stream;
     m_sim_mode = false;
     m_done = false;
+    m_running=0;   //SUCHITA
   }
 
   bool is_kernel() const { return m_type == stream_kernel_launch; }
@@ -193,6 +202,15 @@ class stream_operation {
            m_type == stream_memcpy_device_to_host ||
            m_type == stream_memcpy_host_to_device;
   }
+
+//SUCHITA
+  stream_operation_type get_type() const {return m_type;}
+  unsigned get_uid() const {return m_uid; }   //SUCHITA: to check which operation of the stream finished if they all run in parallel
+  unsigned set_uid(unsigned id) { m_uid = id ; } //SUCHITA: to check which operation of the stream finished if they all run in parallel
+  bool is_wait() const { return m_type == stream_wait_event ; }
+//SUCHITA
+
+
   bool is_noop() const { return m_type == stream_no_op; }
   bool is_done() const { return m_done; }
   kernel_info_t *get_kernel() { return m_kernel; }
@@ -202,11 +220,18 @@ class stream_operation {
     return m_stream;
   }
   void set_stream(CUstream_st *stream) { m_stream = stream; }
+  bool operator == (const stream_operation& s) const { return m_uid == s.m_uid;}
+  bool is_launched() {return m_running;}
+  void set_launched() { m_running = 1;}
+  void cancel() {m_running = 0;}
+
 
  private:
   struct CUstream_st *m_stream;
 
   bool m_done;
+	bool m_running; //SUCHITA: to track which operation is running and which is still queued
+	unsigned m_uid;   //SUCHITA: to track which operation is done since they are no longer serialized
 
   stream_operation_type m_type;
   size_t m_device_address_dst;
@@ -226,10 +251,17 @@ struct CUstream_st {
  public:
   CUstream_st();
   bool empty();
+	bool not_empty_but_launched();  //to keep track of whether all ops have been launched
   bool busy();
   void synchronize();
-  void push(const stream_operation &op);
-  void record_next_done();
+  void push(stream_operation &op); // SUCHITA: removed const
+  //void record_next_done();
+	void record_next_done(stream_operation op); //SUCHITA
+	bool running_kernel() { return m_running_kernel; }  //SUCHITA: to check if current operation is a kernel
+  stream_operation next_op();  //SUCHITA: operation pointed to by pointer
+  unsigned get_num_operations() {return m_num_operations;}  //SUCHITA: to give operations a uid within the stream
+  stream_operation get_operation(unsigned grid_id);  //SUCHITA: to return the kernel operation matching the grid id
+
   stream_operation next();
   void cancel_front();  // front operation fails, cancle the pending status
   stream_operation &front() { return m_operations.front(); }
@@ -238,7 +270,9 @@ struct CUstream_st {
 
  private:
   unsigned m_uid;
+  bool m_running_kernel;
   static unsigned sm_next_stream_uid;
+  unsigned m_num_operations;   //SUCHITA: to give operations a uid within the stream - tracks number of operations within the stream
 
   std::list<stream_operation> m_operations;
   bool m_pending;  // front operation has started but not yet completed
@@ -265,6 +299,7 @@ class stream_manager {
   void stop_all_running_kernels();
   unsigned size() { return m_streams.size(); };
   bool is_blocking() { return m_cuda_launch_blocking; };
+  gpgpu_sim* get_gpu() { return m_gpu; } //SUCHITA: to acess all ready kernels
 
  private:
   void print_impl(FILE *fp);

@@ -65,7 +65,7 @@ enum FuncCache {
   FuncCachePreferL1 = 2
 };
 
-enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
+enum AdaptiveCache { FIXED = 0, ADAPTIVE_VOLTA = 1 };
 
 #ifdef __cplusplus
 
@@ -230,6 +230,13 @@ class kernel_info_t {
   dim3 get_grid_dim() const { return m_grid_dim; }
   dim3 get_cta_dim() const { return m_block_dim; }
 
+	void next_ready_cta() {   //SUCHITA2: to find a ready CTA
+    //SUCHITA2  loop through graph and find the one ready to go - make m_next_cta point to that -- rest will fall in place
+    m_next_tid.x=0;
+    m_next_tid.y=0;
+    m_next_tid.z=0;
+  }
+
   void increment_cta_id() {
     increment_x_then_y_then_z(m_next_cta, m_grid_dim);
     m_next_tid.x = 0;
@@ -373,8 +380,6 @@ class core_config {
   }
   unsigned mem_warp_parts;
   mutable unsigned gpgpu_shmem_size;
-  char *gpgpu_shmem_option;
-  std::vector<unsigned> shmem_opt_list;
   unsigned gpgpu_shmem_sizeDefault;
   unsigned gpgpu_shmem_sizePrefL1;
   unsigned gpgpu_shmem_sizePrefShared;
@@ -871,13 +876,6 @@ class mem_fetch_allocator {
   virtual mem_fetch *alloc(const class warp_inst_t &inst,
                            const mem_access_t &access,
                            unsigned long long cycle) const = 0;
-  virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
-                           const active_mask_t &active_mask,
-                           const mem_access_byte_mask_t &byte_mask,
-                           const mem_access_sector_mask_t &sector_mask,
-                           unsigned size, bool wr, unsigned long long cycle,
-                           unsigned wid, unsigned sid, unsigned tpc,
-                           mem_fetch *original_mf) const = 0;
 };
 
 // the maximum number of destination, source, or address uarch operands in a
@@ -901,6 +899,10 @@ class inst_t {
   inst_t() {
     m_decoded = false;
     pc = (address_type)-1;
+    cta_id_x = 0;
+    cta_id_y = 0;
+    cta_id_z = 0;
+    kernel_id_num = 0;
     reconvergence_pc = (address_type)-1;
     op = NO_OP;
     bar_type = NOT_BAR;
@@ -941,12 +943,20 @@ class inst_t {
   }
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
+  unsigned get_cta_id_x() const { return cta_id_x; }
+  unsigned get_cta_id_y() const { return cta_id_y; }
+  unsigned get_cta_id_z() const { return cta_id_z; }
+  unsigned get_kernel_id_num() const { return kernel_id_num; }
   void set_num_regs(unsigned num) { num_regs = num; }
   void set_num_operands(unsigned num) { num_operands = num; }
   void set_bar_id(unsigned id) { bar_id = id; }
   void set_bar_count(unsigned count) { bar_count = count; }
 
   address_type pc;  // program counter address of instruction
+  unsigned cta_id_x;
+  unsigned cta_id_y;
+  unsigned cta_id_z;
+  unsigned kernel_id_num;
   unsigned isize;   // size of instruction in bytes
   op_type op;       // opcode (uarch visible)
 
@@ -1300,7 +1310,6 @@ class register_set {
     }
     m_name = name;
   }
-  const char *get_name() { return m_name; }
   bool has_free() {
     for (unsigned i = 0; i < regs.size(); i++) {
       if (regs[i]->empty()) {
@@ -1325,35 +1334,7 @@ class register_set {
     }
     return false;
   }
-  bool has_ready(bool sub_core_model, unsigned reg_id) {
-    if (!sub_core_model) return has_ready();
-    assert(reg_id < regs.size());
-    return (not regs[reg_id]->empty());
-  }
 
-  unsigned get_ready_reg_id() {
-    // for sub core model we need to figure which reg_id has the ready warp
-    // this function should only be called if has_ready() was true
-    assert(has_ready());
-    warp_inst_t **ready;
-    ready = NULL;
-    unsigned reg_id;
-    for (unsigned i = 0; i < regs.size(); i++) {
-      if (not regs[i]->empty()) {
-        if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
-          // ready is oldest
-        } else {
-          ready = &regs[i];
-          reg_id = i;
-        }
-      }
-    }
-    return reg_id;
-  }
-  unsigned get_schd_id(unsigned reg_id) {
-    assert(not regs[reg_id]->empty());
-    return regs[reg_id]->get_schd_id();
-  }
   void move_in(warp_inst_t *&src) {
     warp_inst_t **free = get_free();
     move_warp(*free, src);
@@ -1361,27 +1342,8 @@ class register_set {
   // void copy_in( warp_inst_t* src ){
   //   src->copy_contents_to(*get_free());
   //}
-  void move_in(bool sub_core_model, unsigned reg_id, warp_inst_t *&src) {
-    warp_inst_t **free;
-    if (!sub_core_model) {
-      free = get_free();
-    } else {
-      assert(reg_id < regs.size());
-      free = get_free(sub_core_model, reg_id);
-    }
-    move_warp(*free, src);
-  }
-
   void move_out_to(warp_inst_t *&dest) {
     warp_inst_t **ready = get_ready();
-    move_warp(dest, *ready);
-  }
-  void move_out_to(bool sub_core_model, unsigned reg_id, warp_inst_t *&dest) {
-    if (!sub_core_model) {
-      return move_out_to(dest);
-    }
-    warp_inst_t **ready = get_ready(sub_core_model, reg_id);
-    assert(ready != NULL);
     move_warp(dest, *ready);
   }
 
@@ -1397,14 +1359,6 @@ class register_set {
         }
       }
     }
-    return ready;
-  }
-  warp_inst_t **get_ready(bool sub_core_model, unsigned reg_id) {
-    if (!sub_core_model) return get_ready();
-    warp_inst_t **ready;
-    ready = NULL;
-    assert(reg_id < regs.size());
-    if (not regs[reg_id]->empty()) ready = &regs[reg_id];
     return ready;
   }
 
