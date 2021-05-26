@@ -230,12 +230,12 @@ class kernel_info_t {
   dim3 get_grid_dim() const { return m_grid_dim; }
   dim3 get_cta_dim() const { return m_block_dim; }
 
-	void next_ready_cta() {   //SUCHITA2: to find a ready CTA
+	//void next_ready_cta() {   //SUCHITA2: to find a ready CTA
     //SUCHITA2  loop through graph and find the one ready to go - make m_next_cta point to that -- rest will fall in place
-    m_next_tid.x=0;
-    m_next_tid.y=0;
-    m_next_tid.z=0;
-  }
+    /* m_next_tid.x=0; */
+    /* m_next_tid.y=0; */
+    /* m_next_tid.z=0; */
+  /* } */
 
   void increment_cta_id() {
     increment_x_then_y_then_z(m_next_cta, m_grid_dim);

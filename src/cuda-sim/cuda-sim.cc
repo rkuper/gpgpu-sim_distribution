@@ -346,11 +346,11 @@ void function_info::ptx_assemble() {
    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n", m_name.c_str() );
    create_basic_blocks();
    connect_basic_blocks();
-   bool modified = false; 
+   bool modified = false;
    do {
       find_dominators();
       find_idominators();
-      modified = connect_break_targets(); 
+      modified = connect_break_targets();
    } while (modified == true);
 
    if ( g_debug_execution>=50 ) {
@@ -2116,7 +2116,7 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     fflush(stdout);
   }
 
-  kernel.increment_cta_id();
+  // kernel.increment_cta_id(); // SUCHITA2
 
   assert(active_threads.size() <= threads_left);
   *thread_info = active_threads.front();
